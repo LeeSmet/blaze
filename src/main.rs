@@ -5,25 +5,20 @@ use std::ops::Deref;
 use std::time::{Duration, Instant};
 use tokio::runtime;
 
-// const ITERATIONS: usize = 10;
-// const DATA_LIMIT: usize = 4 << 30;
-
-/// Untill zdb flush command properly removes ALL data
-const ITERATIONS: usize = 1;
-const DATA_LIMIT: usize = 1 << 30;
+const ITERATIONS: usize = 10;
+const DATA_LIMIT: usize = 4 << 30;
 
 fn main() {
-    let data_sizes = [4 << 10, 2 << 20];
+    let data_sizes = [4 << 10, 3 << 15, 2 << 20];
     let namespaces = [1, 5, 10];
     let host_threads = [1, 2, 4];
 
     println!("RESULTS:");
-    println!("thread count | concurrent namespaces | data size | longest task | shortest task");
-    println!("---|---|---|---|---");
+    println!("thread count | concurrent namespaces | data size | iteration idx | task time milliseconds | task bytes written | task io operations");
+    println!("---|---|---|---|---|---|---");
     for thread_count in host_threads {
         for ns_count in namespaces {
             for data_size in data_sizes {
-                let mut results = Vec::with_capacity(ITERATIONS);
                 for iteration_idx in 0..ITERATIONS {
                     // some garbage data of the right size, leak to make static for now
                     let data = vec![1; data_size];
@@ -71,26 +66,19 @@ fn main() {
                         // exit reactor
                     });
 
-                    results.push(stats);
+                    for stat in stats {
+                        println!(
+                            "{} | {} | {} | {} | {} | {} | {} |",
+                            thread_count,
+                            ns_count,
+                            data_size,
+                            iteration_idx,
+                            stat.time.as_millis(),
+                            stat.bytes_written,
+                            stat.io_operations,
+                        );
+                    }
                 }
-
-                // print results for config
-                let longest_run_ms = results
-                    .iter()
-                    .flatten()
-                    .map(|stats: &TaskStats| stats.time.as_millis())
-                    .max()
-                    .unwrap();
-                let shortest_run_ms = results
-                    .iter()
-                    .flatten()
-                    .map(|stats: &TaskStats| stats.time.as_millis())
-                    .min()
-                    .unwrap();
-                println!(
-                    "{} | {} | {} | {} ms| {} ms",
-                    thread_count, ns_count, data_size, longest_run_ms, shortest_run_ms
-                );
             }
         }
     }
@@ -206,9 +194,9 @@ impl Namespace {
 
         redis::cmd("SELECT")
             .arg(&self.name)
-            .arg(&self.name)
-            // .arg("SECURE")
-            // .arg(result)
+            // .arg(&self.name)
+            .arg("SECURE")
+            .arg(result)
             .query_async(&mut (*self.con).clone())
             .await
     }
@@ -231,15 +219,7 @@ impl Namespace {
             .await?;
 
         tokio::time::sleep(Duration::from_secs(5)).await;
-        redis::cmd("SELECT")
-            .arg("default")
-            .query_async(&mut (*self.con).clone())
-            .await?;
-
-        redis::cmd("NSDEL")
-            .arg(&self.name)
-            .query_async(&mut (*self.con).clone())
-            .await
+        self.delete().await
     }
 
     pub async fn set(&self, key: Option<&[u8]>, data: &[u8]) -> Result<Vec<u8>, redis::RedisError> {
